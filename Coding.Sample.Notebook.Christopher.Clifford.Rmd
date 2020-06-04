@@ -1,0 +1,390 @@
+---
+title: 'Analysis of the 538 candy dataset'
+author: "Christopher Clifford"
+date: "11/8/2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+grDevices::colors
+library(tidyverse)
+library(fivethirtyeight)
+library(ggrepel)
+library(ggthemes)
+library(bookdown)
+library(broom)
+data(candy_rankings)
+candy.data <- candy_rankings
+```
+
+```{r , include=TRUE}
+#Regression
+  # Full model
+  full.model <- lm(data=candy.data,
+                   formula = winpercent ~ chocolate*sugarpercent)
+  # Clean the model
+  tidy.full.model <- tidy(full.model)
+  
+  # Create a data frame and sort according to chocolate or not
+  sorted.candy.choc <- candy.data %>%
+    group_by(chocolate) %>%
+    nest()
+  
+  # Now create a function that will model the winning percentage by regressing it onto sugar percentage
+  sugar.win.reg <- function(dataframe){
+    lm(data = dataframe,
+       winpercent ~ sugarpercent)
+  }
+  
+  # Apply this model to the sorted candy
+  evaluated.candy <- sorted.candy.choc %>%
+    mutate(model = map(data,
+                       sugar.win.reg))
+  
+  # Clean the two models up
+  tidyed.evaluated.candy <- evaluated.candy %>%
+    mutate(tidied = map(model, tidy))
+  
+  # Unpack the cleaned models
+  analyzed.candy.by.chocolate <- tidyed.evaluated.candy %>%
+    unnest(tidied)
+  
+  # Store the specific chocolate and non-choolate data frames
+  choc.candy.data <- as.data.frame(sorted.candy.choc[[2]][[1]])
+  non.choc.candy.data <- as.data.frame(sorted.candy.choc[[2]][[2]])
+  
+  # Get the means of the win-percent(percent to which a candy is prefered over others) for the chocolate and non-chocolate
+  choc.win.mean <- mean(choc.candy.data[,'winpercent'])
+  non.choc.win.mean <- mean(non.choc.candy.data[,'winpercent'])
+  
+  # Plot
+  candy.plot <- ggplot(data = candy.data, 
+                       aes(x = sugarpercent,
+                           y = winpercent)) +
+  # Make it so the true/false chocolate value of the candy is used to color the candy
+  geom_point( aes(color = chocolate))  + 
+  # Pick the color values for the false and the true chocolate candies, as well as make the labels and title for the legend
+  scale_colour_manual(values = c('deepskyblue','chocolate4'),
+                      labels = c('Non-chocolate','Chocolate'),
+                      guide = guide_legend(reverse = TRUE),
+                      name = 'Candy Type') +
+  # Add the formula slope line for the /w chocolate win% ~ sugar% regression
+  geom_abline(intercept = as.numeric(analyzed.candy.by.chocolate[1,"estimate"]),
+              slope = as.numeric(analyzed.candy.by.chocolate[2,"estimate"]),
+              color ="chocolate4",
+              size = 1) + 
+  # Add the slope line for the without chocolate
+  geom_abline(intercept = as.numeric(analyzed.candy.by.chocolate[3,"estimate"]),
+              slope = as.numeric(analyzed.candy.by.chocolate[4,"estimate"]),
+              color="deepskyblue",
+              size = 1) + 
+  # Now add a dotted line to show the mean of chocolate win %
+  # geom_hline(yintercept = choc.win.mean,
+  #            color = "chocolate4",
+  #            size = .5,
+  #            linetype = 'dashed') +
+  #And now the line to show the mean of the non-chocolate win %
+  # geom_hline(yintercept = non.choc.win.mean,
+  #            color = 'deepskyblue',
+  #            size = .5,
+  #            linetype = 'dashed') + 
+  # Label the plot
+  labs(x = "Decimal % of the candy composed of sugar",
+       y = "% Ratio this Candy is Preferred Over Others",
+       title = "People's Preference for Candy by Sugar %",
+       subtitle = "Divided into Chocolate and Non-chocolate Candy") + 
+  # Add a box to highlight the top 5 candies
+    annotate(geom = "rect",
+           xmin = 0,
+           xmax = .8,
+           ymin = 75,
+           ymax = 90,
+           fill = "black",
+           alpha = 0.15) + 
+  # Define the box for the reader
+  annotate(geom = "text",
+           x = .45,
+           y = 95,
+           label = "The Top Five Preferred Candies") + 
+  # Add labels for the top 5 candies
+  geom_text_repel( aes(label=ifelse((winpercent > 75), as.character(competitorname),'')),
+                   vjust = 0 ) + 
+  theme_economist()
+  
+# Prediction
+  # What is the expected win percentage for a chocolate candy that is at the 47th percentile on sugar?
+  # First, create the model
+  win.sugar.model.choc <- lm(winpercent ~ sugarpercent, data = as.data.frame(sorted.candy.choc[[2]][[1]]))
+  win.sugar.model.no.choc <- lm(winpercent ~ sugarpercent, data = as.data.frame(sorted.candy.choc[[2]][[2]]))
+  # Specify the variables
+  sugarpercent <- c(.47,.87)
+  choc.percentile <- as.data.frame(sugarpercent)
+  # Calculate the formula
+  choc.predict <- predict(object = win.sugar.model.choc, 
+         newdata = choc.percentile,
+         interval = "confidence",
+         level = .95)[1,]
+  non.choc.predict <- predict(object = win.sugar.model.no.choc, 
+         newdata = choc.percentile,
+         interval = "confidence",
+         level = .95)[2,]
+  
+# Put the choc and non-choc candy into specific data frames
+  choc.candy.data <- as.data.frame(sorted.candy.choc[[2]][[1]])
+  non.choc.candy.data <- as.data.frame(sorted.candy.choc[[2]][[2]])
+  
+# Next, check assumptions
+```
+
+
+```{r Check Assumptions, include=TRUE}
+# Check of assumptions
+# Because we're working with two different models, we'll need to make two different graphs for each candy type (Choc/Non-choc)
+  # Goals- Index plots for:
+    # Leverage
+    # Discrepancy
+    # Influence
+    # Residual plots (qq plots)
+    # Scatterplot of residuals vs predicted values
+
+  # Leverage Plot
+  # Create the residuals for the chocolate and non-chocolate model
+  # Get the residuals
+  choc.res <- augment(win.sugar.model.choc)
+  non.choc.res <- augment(win.sugar.model.no.choc)
+  # Make note of the leverage cuttoff values for the residuals
+  choc.lever.cut <- 3 * (1 + 1) / nrow(choc.res)
+  # Make a scatterplot of the position of the index of the residual vs the yhat value
+  choc.leverage.plot <- ggplot(data = choc.res,
+                               aes(x = 1:nrow(choc.res),
+                                   y = .hat)) +
+    geom_point() +
+    # Show the leverage cuttoff value
+    geom_hline(yintercept =  choc.lever.cut,
+               linetype = "dashed",
+               color = 'blue') + 
+    # If anything exceeds the leverage cutoff value, mark it
+    geom_text_repel(aes(label = ifelse((.hat > choc.lever.cut),
+                                        as.character(choc.candy.data[as.numeric(rownames(choc.res)),'competitorname']),'')),
+                    hjust = "outward") + 
+    labs(x="Index", title = "Chocolate Candy Leverage") + 
+    theme_classic()
+  # Now for the non-chocolate leverage plot
+  nonchoc.lever.cut <- 3 * (1 + 1) / nrow(non.choc.res)
+  nonchoc.leverage.plot <- ggplot(data = non.choc.res,
+                             aes(x = 1:nrow(non.choc.res),
+                                 y = .hat)) +
+    geom_point() +
+    geom_hline(yintercept =  nonchoc.lever.cut,
+               linetype = "dashed",
+               color = 'blue') + 
+    geom_text_repel(aes(label = ifelse((.hat > nonchoc.lever.cut),
+                                        as.character(non.choc.candy.data[as.numeric(rownames(non.choc.res)),'competitorname']),'')),
+                    hjust = "outward") + 
+    labs(x="Index", title = "Non-chocolate Candy Leverage") + 
+    theme_classic()
+  
+    ## Discrepancy Plots
+    # Chocolate
+    choc.discrepancy.plot <- ggplot(data = choc.res, aes(x = 1:nrow(choc.res), y = .std.resid)) +
+      geom_point() +
+      geom_smooth(method = loess) +
+      # If there is anything greater than two 2 units away from the studentized residuals, label it
+      geom_text_repel(aes(label = ifelse((abs(.std.resid) > 2),
+                                        as.character(choc.candy.data[as.numeric(rownames(choc.res)),'competitorname']),'')),
+                    hjust = "outward") + 
+      labs(x = "Index") +
+      theme_classic()
+    # Non-chocolate plot
+    nonchoc.discrepancy.plot <- ggplot(data = non.choc.res, aes(x = 1:nrow(non.choc.res), y = .std.resid)) +
+      geom_point() +
+      geom_smooth(method = loess) +
+      # If there is anything greater than two 2 units away from the studentized residuals, label it
+      geom_text_repel(aes(label = ifelse((abs(.std.resid) > 2),
+                                        as.character(non.choc.candy.data[as.numeric(rownames(non.choc.res)),'competitorname']),'')),
+                    hjust = "outward") + 
+      labs(x = "Index") +
+      theme_classic()
+    
+    # Influence plots
+    # Chocolate influence plot
+      #Chocolate cuttoff values
+      choc.cooksd_3mean <- 3*mean(choc.res$.cooksd)
+      choc.cooksd_4n <- 4 / nrow(choc.res)
+      # Plot
+      choc.influence.plot <- ggplot(data = choc.res, aes(x = 1:nrow(choc.res), y = .cooksd)) +
+        geom_point() +
+        labs(x = "Index") +
+        geom_hline(yintercept = choc.cooksd_3mean, linetype = "dashed", color = "blue") + 
+        geom_hline(yintercept = choc.cooksd_4n, linetype = "dashed", color = "red") +
+        labs(caption = bquote("Blue dashed line: 3*mean(Cook's d) =" 
+                              ~  .(round(choc.cooksd_3mean, 3))~". Red dashed line: 4/n ="
+                              ~.(round(choc.cooksd_4n, 3)))) +
+        geom_text_repel(aes(label=ifelse((.cooksd > choc.cooksd_3mean) & 
+                                           (.cooksd > choc.cooksd_4n), 
+                                         as.character(choc.candy.data[as.numeric(rownames(choc.res)),'competitorname']),'')), 
+                        hjust = "outward") +
+        theme_classic()
+    # Non-Chocolate influence plot
+      # Candy cuttoff values
+      nonchoc.cooksd_3mean <- 3*mean(non.choc.res$.cooksd)
+      nonchoc.cooksd_4n <- 4 / nrow(non.choc.res)
+      #Plot
+      nonchoc.influence.plot <- ggplot(data = non.choc.res, aes(x = 1:nrow(non.choc.res), y = .cooksd)) +
+        geom_point() +
+        labs(x = "Index") +
+        geom_hline(yintercept = nonchoc.cooksd_3mean, linetype = "dashed", color = "blue") + 
+        geom_hline(yintercept = nonchoc.cooksd_4n, linetype = "dashed", color = "red") +
+        labs(caption = bquote("Blue dashed line: 3*mean(Cook's d) =" 
+                              ~  .(round(nonchoc.cooksd_3mean, 3))~". Red dashed line: 4/n ="
+                              ~.(round(nonchoc.cooksd_4n, 3)))) +
+        geom_text_repel(aes(label=ifelse((.cooksd > nonchoc.cooksd_3mean) & 
+                                           (.cooksd > nonchoc.cooksd_4n), 
+                                         as.character(non.choc.candy.data[as.numeric(rownames(non.choc.res)),'competitorname']),'')), 
+                        hjust = "outward") +
+        theme_classic()
+      
+  #Residual (QQ Plot)
+    #Chocolate qq plot
+      choc.win.qqplot <- ggplot(choc.candy.data, aes(sample=winpercent))+
+        stat_qq() + 
+        theme_classic()
+      
+    # Non-chocolate qq plot
+      nonchoc.win.qqplot <- ggplot(non.choc.candy.data, aes(sample=winpercent))+
+        stat_qq() + 
+        theme_classic()
+    
+    # Scatterplot of residuals vs predicted values
+      # Chocolate Predictions
+    choc.resid.predict <- ggplot(data = choc.res, aes(x = .fitted, y = .resid)) +
+      labs(x = "Predicted Win % For Chocolate Candy") +
+      geom_point() +
+      geom_smooth(method = loess) + 
+      geom_text_repel(aes(label = ifelse((abs(.resid) > 25),
+                                        as.character(choc.candy.data[as.numeric(rownames(choc.res)),'competitorname']),'')),
+                    hjust = "outward") + 
+      theme_classic()
+    
+    # Non-Chocolate Predictions
+    non.choc.resid.predict <- ggplot(data = non.choc.res, aes(x = .fitted, y = .resid)) +
+      labs(x = "Predicted Win % For Non-Chocolate Candy") +
+      geom_point() +
+      geom_smooth(method = loess) + 
+      geom_text_repel(aes(label = ifelse((abs(.resid) > 20),
+                                        as.character(non.choc.candy.data[as.numeric(rownames(non.choc.res)),'competitorname']),'')),
+                    hjust = "outward") + 
+      theme_classic()
+```
+
+## Analysis
+
+Primary Questions:
+
+   * Are more sugary candies rated higher?
+   * Are candies that are chocolate rated higher?
+   * Does a candy being chocolate change the impact of being sugary on rating?
+
+## Regression
+
+The results of a basic regression with the preference selection of the candy relative to others regressed onto the percent sugar composition of the candy and, and using chocolate/not-chocolate as a distinguishing factor shows the following:
+```{r full model}
+  print(as.data.frame(tidy.full.model))
+```
+
+  
+From this, we can see that candy being more sugary did not have a bearing on it's preference.  Additionally, a candy being chocolate did not change the impact of being sugary on winning.  However, if the candy was chocolate there was a significantly higher effect on it's preference, by `r round(as.numeric(tidy.full.model[2,2]),2)` percent.
+
+## Plots
+This can be more clearly seen in the overall plot of how % sugar composition sugary affects how people rate the candy.
+
+```{r Candy Plot, include=TRUE}
+candy.plot
+```
+The model shows that there's little positive increase for the non-chocolate candy as the sugar percentage gets higher, and the chocolate candy doesn't have a particularly steep slope itself.  In contrast, the distance between the two lines is noticable, and regression analysis from before shows this distance is significant.  Meanwhile, by eyeballing the top candies, we can see a wide distribtuion of % sugar composition among the highest rated candies.
+
+## Predictions
+   * The expected win percentage of chocolate candy that is in the 47th percentile on sugar would be `r round(choc.predict[1],2)`, with lower and upper confidence intervals (95%) of `r round(choc.predict[2],2)` and `r round(choc.predict[3],2)` respectively
+   * The expected win percentage of non-chocolate candy that is in the 87th percentile on sugar would be `r round(non.choc.predict[1],2)` with lower and upper confidence intervals (95%) of `r round(non.choc.predict[2],2)` and `r round(non.choc.predict[3],2)` respectively
+  
+## Check assumptions
+
+Both models, the chocolate and the non-chocolate, were analyzed for outliers and violations of assumptions.
+The following plots and explainations reveal the results.
+
+### Leverage Plots
+
+#### Chocolate Model
+
+```{r Lev Choc Plot, include=TRUE}
+choc.leverage.plot
+```
+
+#### Non-Chocolate Model
+
+```{r Lev non-Choc Plot, include=TRUE}
+nonchoc.leverage.plot
+```
+Neither of the two models are showing  extreme cases in the predictor space (using the $3(k+1)/n$ equation for small to medium samples)
+
+### Discrepancy Plots
+
+#### Chocolate Model
+```{r Disc Choc Plot, include=TRUE}
+choc.discrepancy.plot
+```
+
+#### Non-chocolate Model
+```{r Disc non-Choc Plot, include=TRUE}
+nonchoc.discrepancy.plot
+```
+There are two values in each of the categories(mini-recees and starbust) that are larger in their studentized residuals than the other, but the overall lines do not have a large skew
+
+### Influence Plots
+
+#### Chocolate Model
+```{r Inf Choc Plot, include=TRUE}
+choc.influence.plot
+```
+
+#### Non-chocolate Model
+```{r Inf non-Choc Plot, include=TRUE}
+nonchoc.influence.plot
+```
+The influence plots show that mini-recess have a strong effect, relative to the predictor that was being used (% sugar composition).  Starburst, Skittles, and Sour Patche kids are all providing a strong change to the results of the non-chocolate model.  However, it's still noticablly smaller than how influential mini-recess were, by a factor of slightly more than three.
+
+### QQ Plots
+
+### Chocolate Model - Distribution of Win Percent
+```{r QQ Choc Plot, include=TRUE}
+choc.win.qqplot
+```
+
+### Non-Chocolate Model - Distribution of Win Percent
+```{r QQ non-Choc Plot, include=TRUE}
+nonchoc.win.qqplot
+```
+
+###Residual Prediction Plots
+#### Chocolate Win Percent Prediciton Residuals
+```{r Resid Pred Choc Plot, include=TRUE}
+choc.resid.predict
+```
+
+#### Non-Chocolate Win Percent Prediciton Residuals
+```{r Resid Pred non-Choc Plot, include=TRUE}
+non.choc.resid.predict
+```
+
+The QQ plots show: 
+
+   * In the chocolate group, recess minatures were an outlier.  They have a stronger influence on the chocolate model relative to every other candy.  From the Prediction vs Residual plot, this shows us that the minature recess are coming out as a stronger winner (percent wise) relative to their % sugar composition than any other chocolate candy by a high margin.
+   
+## Summary
+
+ * When it comes to candy, whether or not the candy is chocolate is a significant factor in influencing if people are going to rate that candy higher than others.  Conversly, there is nothing about the % sugar composition of a candy that makes a person more likely to rate it higher than another candy.  This can be seen in the major plot of the candy, where not only are the differences between chocolate and non-chocolate candy trends far apart from each other's means, but all of the top 5 candies are all chocolate, and have a wide distribution of % sugar composition. 
+   
+ * An analysis of indivdual ratings of preference of candy by type looked at the way in with both the % sugar composition and if the candy was chocolate would affect individual ratings of the candy.  The results revealed that % sugar composition had no effect on the rating of candy, while the candy being chocolate had an approximate `r round(as.numeric(tidy.full.model[2,2]),2)`% increase on people's relative preference of the candy.  While there were a few candies that were rated higher relative to their % sugar content(Reese's Miniatures for the chocolate candy, Starburst for the non-chocolate candy), there were no candy groupings that were unduely influencing the model relative to the factors that were signifcantly predicting what effected people's relative rating of candy.
